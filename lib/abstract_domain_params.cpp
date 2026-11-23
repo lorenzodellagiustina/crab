@@ -53,12 +53,16 @@ void boxes_domain_params::write(crab::crab_os &o) const {
 void powerset_domain_params::update_params(const powerset_domain_params &params) {
   m_exact_meet = params.powerset_exact_meet();
   m_max_disjuncts = params.powerset_max_disjuncts();
+  m_merge_closest = params.powerset_merge_closest();
+  m_pairwise_widening = params.powerset_pairwise_widening();
 }
 
 void powerset_domain_params::write(crab::crab_os &o) const {
   o << "Powerset parameters:\n";
   o << "\texact_meet=" << m_exact_meet << "\n";
   o << "\tmax_disjuncts=" << m_max_disjuncts << "\n";
+  o << "\tmerge_closest=" << m_merge_closest << "\n";
+  o << "\tpairwise_widening=" << m_pairwise_widening << "\n";
 }
 
 void region_domain_params::update_params(const region_domain_params &params) {
@@ -149,7 +153,9 @@ void crab_domain_params::update_params(const crab_domain_params &p) {
 			  p.boxes_convexify_threshold(),
 			  p.boxes_dynamic_reordering());
   powerset_domain_params p_p(p.powerset_exact_meet(),
-			     p.powerset_max_disjuncts());
+			     p.powerset_max_disjuncts(),
+			     p.powerset_merge_closest(),
+			     p.powerset_pairwise_widening());
   region_domain_params r_p(p.region_allocation_sites(),
 			   p.region_deallocation(),
 			   p.region_tag_analysis(),
@@ -239,6 +245,10 @@ void crab_domain_params::set_param(const std::string &param, const std::string &
     powerset_domain_params::m_exact_meet = to_bool(val);
   } else if (param == "powerset.max_disjuncts") {
     powerset_domain_params::m_max_disjuncts = to_uint(val);
+  } else if (param == "powerset.merge_closest") {
+    powerset_domain_params::m_merge_closest = to_bool(val);
+  } else if (param == "powerset.pairwise_widening") {
+    powerset_domain_params::m_pairwise_widening = to_bool(val);
   } else if (param == "region.allocation_sites") {
     region_domain_params::m_allocation_sites = to_bool(val);
   } else if (param == "region.deallocation") {

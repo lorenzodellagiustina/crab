@@ -1999,6 +1999,164 @@ user-defined assertion checker
 0  Number of total unreachable checks
 
 === End ./test-bin/powerset ===
+=== Begin ./test-bin/powerset-fixpoint ===
+entry:
+  x = 0;
+  z = 0;
+  goto head;
+head:
+  goto is5,not5,exit;
+is5:
+  assume(x = 5);
+  z = 1;
+  goto mid;
+mid:
+  goto is0,not0;
+is0:
+  assume(x = 0);
+  x = 10;
+  goto latch;
+latch:
+  goto head;
+not0:
+  assume(x != 0);
+  x = 5;
+  goto latch;
+not5:
+  assume(x != 5);
+  goto mid;
+exit:
+  assert(z = 0);
+
+
+Invariants using PS(ArrayAdapt)
+Abstract trace: entry (head not5 is5 mid not0 is0 latch)^{4} exit
+user-defined assertion checker
+0  Number of total safe checks
+0  Number of total error checks
+1  Number of total warning checks
+0  Number of total unreachable checks
+
+=== End ./test-bin/powerset-fixpoint ===
+=== Begin ./test-bin/powerset-merge ===
+entry:
+  assume(-x <= 0);
+  assume(x <= 255);
+  c = 2;
+  goto dear,cheap;
+dear:
+  assume(x <= 9);
+  c = c+500;
+  goto mid;
+mid:
+  c = c+1;
+  goto small,big;
+small:
+  assume(x <= 199);
+  c = c+1;
+  goto last;
+last:
+  c = c+1;
+  goto low,high;
+low:
+  assume(x <= 9);
+  assert(c = 505);
+  goto exit;
+exit:
+
+high:
+  assume(-x <= -10);
+  assert(-c <= -14);
+  assert(c <= 15);
+  goto exit;
+big:
+  assume(-x <= -200);
+  goto last;
+cheap:
+  assume(-x <= -10);
+  c = c+10;
+  goto mid;
+
+=== at most 2 disjuncts, smashing ===
+Invariants using PS(ArrayAdapt)
+Abstract trace: entry cheap dear mid big small last high low exit
+user-defined assertion checker
+1  Number of total safe checks
+0  Number of total error checks
+2  Number of total warning checks
+0  Number of total unreachable checks
+
+=== at most 2 disjuncts, merging the closest ===
+Invariants using PS(ArrayAdapt)
+Abstract trace: entry cheap dear mid big small last high low exit
+user-defined assertion checker
+3  Number of total safe checks
+0  Number of total error checks
+0  Number of total warning checks
+0  Number of total unreachable checks
+
+=== End ./test-bin/powerset-merge ===
+=== Begin ./test-bin/powerset-pairwise ===
+entry:
+  goto m3,m7,mother;
+m3:
+  assume(mode = 3);
+  k = 40;
+  goto pre;
+pre:
+  i = 0;
+  goto head;
+head:
+  goto body,after;
+body:
+  assume(-k+i <= -1);
+  i = i+1;
+  goto head;
+after:
+  assume(k-i <= 0);
+  goto a3,a7,aother;
+a3:
+  assume(mode = 3);
+  assert(i = 40);
+  goto exit;
+exit:
+
+a7:
+  assume(mode = 7);
+  assert(i = 10);
+  goto exit;
+aother:
+  assume(-mode <= -8);
+  assert(i = 0);
+  goto exit;
+m7:
+  assume(mode = 7);
+  k = 10;
+  goto pre;
+mother:
+  assume(-mode <= -8);
+  k = 0;
+  goto pre;
+
+=== smashing widening ===
+Invariants using PS(ArrayAdapt)
+Abstract trace: entry mother m7 m3 pre (head body)^{3} after aother a7 a3 exit
+user-defined assertion checker
+0  Number of total safe checks
+0  Number of total error checks
+3  Number of total warning checks
+0  Number of total unreachable checks
+
+=== pairwise widening ===
+Invariants using PS(ArrayAdapt)
+Abstract trace: entry mother m7 m3 pre (head body)^{3} after aother a7 a3 exit
+user-defined assertion checker
+3  Number of total safe checks
+0  Number of total error checks
+0  Number of total warning checks
+0  Number of total unreachable checks
+
+=== End ./test-bin/powerset-pairwise ===
 === Begin ./test-bin/region-1 ===
 entry:
   region_init(region_0:region(int32));

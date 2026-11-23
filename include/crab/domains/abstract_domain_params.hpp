@@ -117,26 +117,53 @@ public:
 
 class powerset_domain_params {
   bool m_exact_meet;
-  // Smash if the number of disjunctions exceeds this threshold.
+  // Reduce the number of disjunctions if it exceeds this threshold.
   unsigned m_max_disjuncts;
+  // How to reduce it: false smashes all disjunctions into one, true joins the
+  // two closest disjunctions until the threshold is met.
+  bool m_merge_closest;
+  // Widening (and narrowing): false smashes all disjunctions before applying
+  // the base domain's operator, true applies it to each disjunction of the
+  // left operand. Meant to be used with exact_meet, since the narrowing phase
+  // starts with a meet.
+  bool m_pairwise_widening;
 
-  friend class crab_domain_params;  
+  friend class crab_domain_params;
 public:
   powerset_domain_params()
     : m_exact_meet(false),
-      m_max_disjuncts(99999) {
+      m_max_disjuncts(99999),
+      m_merge_closest(false),
+      m_pairwise_widening(false) {
   }
   powerset_domain_params(bool exact_meet,
 			 unsigned max_disjuncts)
     : m_exact_meet(exact_meet),
-      m_max_disjuncts(max_disjuncts) {
+      m_max_disjuncts(max_disjuncts),
+      m_merge_closest(false),
+      m_pairwise_widening(false) {
   }
-  
+  powerset_domain_params(bool exact_meet,
+			 unsigned max_disjuncts,
+			 bool merge_closest,
+			 bool pairwise_widening)
+    : m_exact_meet(exact_meet),
+      m_max_disjuncts(max_disjuncts),
+      m_merge_closest(merge_closest),
+      m_pairwise_widening(pairwise_widening) {
+  }
+
   bool powerset_exact_meet() const {
     return m_exact_meet;
   }
   unsigned powerset_max_disjuncts() const {
     return m_max_disjuncts;
+  }
+  bool powerset_merge_closest() const {
+    return m_merge_closest;
+  }
+  bool powerset_pairwise_widening() const {
+    return m_pairwise_widening;
   }
   void update_params(const powerset_domain_params &p);
   void write(crab::crab_os &o) const;  
@@ -340,6 +367,8 @@ public:
      - boxes.dynamic_reordering: bool
      - powerset.exact_meet: bool
      - powerset.max_disjuncts: unsigned
+     - powerset.merge_closest: bool
+     - powerset.pairwise_widening: bool
      - region.allocations_sites: bool
      - region.deallocation: bool
      - region.tag_analysis: bool

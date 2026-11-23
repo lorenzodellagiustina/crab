@@ -1,12 +1,19 @@
 #pragma once
 
 #include <crab/domains/abstract_domain.hpp>
+#include <crab/domains/abstract_domain_mixins.hpp>
 #include <crab/domains/abstract_domain_params.hpp>
 #include <crab/domains/backward_assign_operations.hpp>
 #include <crab/domains/interval.hpp>
 #include <crab/domains/inter_abstract_operations.hpp>
 #include <crab/support/debug.hpp>
 #include <crab/support/stats.hpp>
+
+#include <boost/optional.hpp>
+
+#include <algorithm>
+#include <set>
+#include <vector>
 
 namespace crab {
 namespace domains {
@@ -21,8 +28,28 @@ public:
  * base domain.
  *
  * There is no a generic way of implementing the widening operation
- * for the powerset domain. The current widening smashes all disjuncts
- * before calling the widening of the base domain.
+ * for the powerset domain. By default, the widening smashes all
+ * disjuncts before calling the widening of the base domain. With
+ * powerset.pairwise_widening, it keeps the disjuncts of its left
+ * operand instead: each disjunct of the right operand that is not
+ * included in one of them is assigned to the closest one, which is
+ * widened with it. The number of disjuncts never grows, and each
+ * disjunct follows a widening sequence of the base domain, so the
+ * iteration terminates. The narrowing is then pairwise too: the next
+ * descending iterate is regrouped into the disjuncts of the previous
+ * one (see pairwise_narrowing()).
+ *
+ * When the number of disjuncts exceeds powerset.max_disjuncts, they
+ * are smashed into one by default. With powerset.merge_closest, the
+ * two closest disjuncts are joined instead, until the bound is met.
+ * The distance between two disjuncts is computed from the intervals
+ * of their variables (see distance()).
+ *
+ * The inclusion test (operator<=) is the Hoare order: each disjunct
+ * of the left operand is included in some disjunct of the right
+ * operand. It may answer false when the left operand is included in
+ * the union of the right operand's disjuncts, but never answers true
+ * when it is not, which the fixpoint check requires.
  */
 template <typename Domain, typename Params = PowersetDefaultParams>
 class powerset_domain final
@@ -80,9 +107,233 @@ private:
   powerset_domain(base_dom_vector &&powerset)
       : m_disjuncts(std::move(powerset)) {
     normalize_if_top();
-    if (m_disjuncts.size() > crab_domain_params_man::get().powerset_max_disjuncts()) {
+    reduce();
+  }
+
+  /*
+    How far apart two disjuncts are: over the variables that either of
+    them constrains, the sum of the distances between the lower bounds
+    and between the upper bounds of their intervals. A bound that is
+    infinite in one disjunct and finite in the other is infinitely far:
+    distances compare first by the number of such bounds, then by the
+    sum of the finite ones.
+   */
+  struct distance_t {
+    unsigned infinite = 0;
+    number_t finite = 0;
+    bool operator<(const distance_t &o) const {
+      return infinite < o.infinite || (infinite == o.infinite && finite < o.finite);
+    }
+  };
+
+  template <typename Bound>
+  static void add_bound_distance(const Bound &a, const Bound &b, distance_t &d) {
+    if (a.is_finite() && b.is_finite()) {
+      number_t diff = *a.number() - *b.number();
+      d.finite += (diff < number_t(0) ? -diff : diff);
+    } else if (a.is_finite() != b.is_finite() ||
+               a.is_plus_infinity() != b.is_plus_infinity()) {
+      d.infinite++;
+    }
+  }
+
+  static void collect_variables(const Domain &dom, std::set<variable_t> &vars) {
+    for (auto const &cst : dom.to_linear_constraint_system()) {
+      for (auto const &v : cst.variables()) {
+        vars.insert(v);
+      }
+    }
+  }
+
+  static distance_t distance(const Domain &d1, const Domain &d2) {
+    std::set<variable_t> vars;
+    collect_variables(d1, vars);
+    collect_variables(d2, vars);
+    distance_t d;
+    for (auto const &v : vars) {
+      interval_t i1 = d1.at(v);
+      interval_t i2 = d2.at(v);
+      if (i1.is_bottom() || i2.is_bottom()) {
+        continue;
+      }
+      add_bound_distance(i1.lb(), i2.lb(), d);
+      add_bound_distance(i1.ub(), i2.ub(), d);
+    }
+    return d;
+  }
+
+  // The index of the disjunct of `vec` closest to `dom`. `vec` is not empty.
+  static unsigned closest(const base_dom_vector &vec, const Domain &dom) {
+    assert(!vec.empty());
+    unsigned best = 0;
+    distance_t best_d = distance(vec[0], dom);
+    for (unsigned i = 1, sz = vec.size(); i < sz; ++i) {
+      distance_t d = distance(vec[i], dom);
+      if (d < best_d) {
+        best = i;
+        best_d = d;
+      }
+    }
+    return best;
+  }
+
+  // Joins the two closest disjuncts of `vec` until it has at most `max`.
+  static void merge_closest(base_dom_vector &vec, unsigned max) {
+    while (vec.size() > std::max(max, 1u)) {
+      unsigned bi = 0, bj = 1;
+      distance_t best_d = distance(vec[0], vec[1]);
+      for (unsigned i = 0, sz = vec.size(); i < sz; ++i) {
+        for (unsigned j = i + 1; j < sz; ++j) {
+          distance_t d = distance(vec[i], vec[j]);
+          if (d < best_d) {
+            bi = i;
+            bj = j;
+            best_d = d;
+          }
+        }
+      }
+      vec[bi] |= vec[bj];
+      vec.erase(vec.begin() + bj);
+    }
+  }
+
+  // Brings the number of disjuncts within powerset.max_disjuncts.
+  void reduce() {
+    auto const &params = crab_domain_params_man::get();
+    if (m_disjuncts.size() <= params.powerset_max_disjuncts()) {
+      return;
+    }
+    if (params.powerset_merge_closest()) {
+      CRAB_LOG("powerset", crab::outs() << "Merging the closest disjuncts of\n"
+                                        << *this << " into \n";);
+      merge_closest(m_disjuncts, params.powerset_max_disjuncts());
+      normalize_if_top();
+      CRAB_LOG("powerset", crab::outs() << *this << "\n";);
+    } else {
       smash_disjuncts();
     }
+  }
+
+  /*
+    Pairwise extrapolation (widening or narrowing) of this, the previous
+    iterate, with `other`, the next one, by `op` on the base domain:
+    - the disjuncts of the result are those of this, in the same number;
+    - each disjunct of `other` not included in a disjunct of this is
+      assigned to the closest disjunct of this;
+    - each disjunct d of this becomes op(d, d | assigned).
+   */
+  template <typename Op>
+  powerset_domain_t pairwise_widening(const powerset_domain_t &other,
+                                      Op op) const {
+    if (is_bottom()) {
+      return other;
+    } else if (other.is_bottom()) {
+      return *this;
+    } else if (is_top() || other.is_top()) {
+      powerset_domain_t top(false);
+      return top;
+    }
+    base_dom_vector slots;
+    slots.reserve(m_disjuncts.size());
+    for (auto const &d : m_disjuncts) {
+      if (!d.is_bottom()) {
+        slots.push_back(d);
+      }
+    }
+    std::vector<boost::optional<Domain>> assigned(slots.size());
+    for (auto const &a : other.m_disjuncts) {
+      if (a.is_bottom()) {
+        continue;
+      }
+      bool included = false;
+      for (auto const &s : slots) {
+        if (a <= s) {
+          included = true;
+          break;
+        }
+      }
+      if (included) {
+        continue;
+      }
+      unsigned j = closest(slots, a);
+      if (assigned[j]) {
+        *assigned[j] |= a;
+      } else {
+        assigned[j] = a;
+      }
+    }
+    for (unsigned j = 0, sz = slots.size(); j < sz; ++j) {
+      if (assigned[j]) {
+        Domain joined = slots[j] | *assigned[j];
+        slots[j] = op(slots[j], joined);
+      }
+    }
+    return powerset_domain_t(std::move(slots));
+  }
+
+  /*
+    Pairwise narrowing of this, a post-fixpoint X, with `other`, the next
+    iterate F(X) of the descending sequence:
+    - each disjunct of `other` is assigned to the closest disjunct of
+      this that includes it, or to the closest one if none does;
+    - the result has one disjunct per disjunct of this that received
+      something: the join of what it received.
+    The result covers `other`, so it is sound whenever F(X) is (the
+    descending iterates of a post-fixpoint are). Unlike `other` itself,
+    it never has more disjuncts than this: returning F(X) as it is would
+    unroll the loop by one more iteration at each descending step,
+    until the bound on the disjuncts merges unrelated ones.
+   */
+  powerset_domain_t pairwise_narrowing(const powerset_domain_t &other) const {
+    if (is_bottom() || other.is_bottom()) {
+      return other;
+    } else if (is_top()) {
+      return other;
+    } else if (other.is_top()) {
+      return *this;
+    }
+    base_dom_vector slots;
+    slots.reserve(m_disjuncts.size());
+    for (auto const &d : m_disjuncts) {
+      if (!d.is_bottom()) {
+        slots.push_back(d);
+      }
+    }
+    std::vector<boost::optional<Domain>> assigned(slots.size());
+    for (auto const &a : other.m_disjuncts) {
+      if (a.is_bottom()) {
+        continue;
+      }
+      boost::optional<unsigned> best;
+      distance_t best_d;
+      for (unsigned j = 0, sz = slots.size(); j < sz; ++j) {
+        if (a <= slots[j]) {
+          distance_t d = distance(slots[j], a);
+          if (!best || d < best_d) {
+            best = j;
+            best_d = d;
+          }
+        }
+      }
+      unsigned j = best ? *best : closest(slots, a);
+      if (assigned[j]) {
+        *assigned[j] |= a;
+      } else {
+        assigned[j] = a;
+      }
+    }
+    base_dom_vector res;
+    res.reserve(slots.size());
+    for (auto &a : assigned) {
+      if (a) {
+        res.push_back(std::move(*a));
+      }
+    }
+    if (res.empty()) {
+      powerset_domain_t bot(true);
+      return bot;
+    }
+    return powerset_domain_t(std::move(res));
   }
 
   void normalize_if_top() {
@@ -284,12 +535,33 @@ public:
     m_disjuncts.push_back(disjunct);
   }
 
+  // The Hoare order: each disjunct of this is included in some disjunct
+  // of other (see the comment at the top). Comparing the smashed
+  // operands instead would answer true when the union of this is not
+  // included in the union of other, e.g. {x=5} and {x=0} or {x=10},
+  // and stop the fixpoint iteration before it is reached.
   virtual bool operator<=(const powerset_domain_t &other) const override {
-    powerset_domain_t pow_left(*this);
-    powerset_domain_t pow_right(other);
-    Domain left = smash_disjuncts(pow_left);
-    Domain right = smash_disjuncts(pow_right);
-    return left <= right;
+    if (is_bottom() || other.is_top()) {
+      return true;
+    } else if (other.is_bottom()) {
+      return false;
+    }
+    for (auto const &d : m_disjuncts) {
+      if (d.is_bottom()) {
+        continue;
+      }
+      bool included = false;
+      for (auto const &o : other.m_disjuncts) {
+        if (d <= o) {
+          included = true;
+          break;
+        }
+      }
+      if (!included) {
+        return false;
+      }
+    }
+    return true;
   }
 
   virtual void operator|=(const powerset_domain_t &other) override {
@@ -310,9 +582,7 @@ public:
     }
 
     append(m_disjuncts, other.m_disjuncts);
-    if (m_disjuncts.size() > crab_domain_params_man::get().powerset_max_disjuncts()) {
-      smash_disjuncts();
-    }
+    reduce();
     CRAB_LOG("powerset", crab::outs() << *this << "\n";);
   }
 
@@ -339,6 +609,11 @@ public:
   
   virtual powerset_domain_t
   operator||(const powerset_domain_t &other) const override {
+    if (crab_domain_params_man::get().powerset_pairwise_widening()) {
+      return pairwise_widening(other, [](const Domain &l, const Domain &r) {
+        return l || r;
+      });
+    }
     Domain left = smash_disjuncts(*this);
     Domain right = smash_disjuncts(other);
     return powerset_domain_t(left || right);
@@ -347,13 +622,24 @@ public:
   virtual powerset_domain_t widening_thresholds(
       const powerset_domain_t &other,
       const thresholds<number_t> &ts) const override {
+    if (crab_domain_params_man::get().powerset_pairwise_widening()) {
+      return pairwise_widening(other, [&ts](const Domain &l, const Domain &r) {
+        return l.widening_thresholds(r, ts);
+      });
+    }
     Domain left = smash_disjuncts(*this);
     Domain right = smash_disjuncts(other);
     return powerset_domain_t(left.widening_thresholds(right, ts));
   }
 
+  // With pairwise widening, the narrowing is pairwise too (see
+  // pairwise_narrowing): the next iterate of the descending sequence,
+  // regrouped into the disjuncts of the left operand.
   virtual powerset_domain_t
   operator&&(const powerset_domain_t &other) const override {
+    if (crab_domain_params_man::get().powerset_pairwise_widening()) {
+      return pairwise_narrowing(other);
+    }
     Domain left = smash_disjuncts(*this);
     Domain right = smash_disjuncts(other);
     return powerset_domain_t(left && right);
